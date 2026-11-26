@@ -3,6 +3,12 @@
   "name": "CVAT 3D Cuboid Helper",
   "version": "0.3.0",
   "description": "Tự fit cuboid theo cụm điểm (G, Ctrl+click), gom lại theo view 2D, giữ cuboid sát mặt đất, nới/thu từng mặt bằng WASD trong CVAT 3D.",
+  "minimum_chrome_version": "111",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "content_scripts": [
     {
       "matches": ["http://localhost:8080/*", "http://127.0.0.1:8080/*", "https://cvat.edufun.ai/*"],

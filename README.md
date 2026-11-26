@@ -29,11 +29,14 @@ Khi chuột ở trên 3 view nhỏ, script chặn các phím này nên **D khôn
 
 Không cần Tampermonkey, không phải dán lại sau mỗi lần tải trang.
 
-1. Mở `chrome://extensions` (Edge: `edge://extensions`), bật **Developer mode**.
-2. Bấm **Load unpacked**, chọn thư mục `tool_3d` (thư mục có file `manifest.json`).
-3. Mở hoặc tải lại (F5) trang job 3D. Gõ `cuboidHelper.check()` trong Console để kiểm tra.
+1. Đóng gói: chạy `node build-extension.js`. Lệnh này tạo thư mục `dist/cvat3d-cuboid-helper/` (chỉ gồm `manifest.json`, script và icon) và file `dist/cvat3d-cuboid-helper-0.3.0.zip` để chép sang máy khác.
+2. Mở `chrome://extensions` (Edge: `edge://extensions`), bật **Developer mode**.
+3. Bấm **Load unpacked**, chọn thư mục `dist/cvat3d-cuboid-helper` (hoặc thư mục giải nén từ file zip). Chọn thẳng thư mục `tool_3d` cũng được.
+4. Mở hoặc tải lại (F5) trang job 3D. Gõ `cuboidHelper.check()` trong Console để kiểm tra.
 
-Extension chạy chính file `cvat3d-cuboid-helper.user.js`. Sửa file đó xong thì bấm nút tải lại (↻) của extension trong `chrome://extensions`, rồi F5 trang CVAT. Extension chạy trên `localhost:8080` và `https://cvat.edufun.ai`. Dùng server khác thì thêm địa chỉ vào `matches` trong `manifest.json`. Cần Chrome/Edge bản 111 trở lên. Đừng bật cùng lúc cả extension và script Tampermonkey: script chỉ chạy 1 lần trên mỗi trang.
+Chrome không cho cài thẳng file zip hay `.crx` tự đóng gói: phải giải nén rồi Load unpacked như trên. Muốn cài bằng một cú bấm thì phải đưa lên Chrome Web Store.
+
+Extension chạy chính file `cvat3d-cuboid-helper.user.js`. Sửa file đó xong thì chạy lại `node build-extension.js` (nếu đang dùng thư mục `dist`), bấm nút tải lại (↻) của extension trong `chrome://extensions`, rồi F5 trang CVAT. Extension chạy trên `localhost:8080` và `https://cvat.edufun.ai`. Dùng server khác thì thêm địa chỉ vào `matches` trong `manifest.json`. Cần Chrome/Edge bản 111 trở lên. Đừng bật cùng lúc cả extension và script Tampermonkey: script chỉ chạy 1 lần trên mỗi trang.
 
 ## Cài đặt bằng Tampermonkey
 
