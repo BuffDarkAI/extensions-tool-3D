@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CVAT 3D Cuboid Helper (auto-fit + WASD)
 // @namespace    tool_3d
-// @version      0.1.6
+// @version      0.1.7
 // @description  Tự fit cuboid theo cụm điểm (phím G) và nới/thu từng mặt cuboid bằng WASD trong các view Top/Side/Front của CVAT 3D.
 // @match        *://*/*
 // @grant        none
@@ -18,6 +18,8 @@
 //   S / A        : thu mặt dưới / mặt trái vào trong (mặt dịch lên / sang phải)
 //   Shift+WASD   : đảo lại (Shift+W/D thu mặt trên/phải, Shift+S/A nới mặt dưới/trái)
 //   Q/E          : (chỉ ở view Top) xoay yaw -/+ 1°, Shift: 0.2°
+//   ← / →        : (chỉ ở view Top) xoay -/+ 90°, đổi chỗ L và W nên khung đáy giữ nguyên
+//   ↑ / ↓        : (chỉ ở view Top) xoay 180° (đảo đầu/đuôi)
 //   ] / [        : điểm to hơn / nhỏ hơn
 //   B            : đổi độ sáng điểm (0 = gốc, 1, 2, 3)
 
@@ -581,6 +583,7 @@ function main() {
   }
 
   const KEY_DIR = { KeyW: [0, 1], KeyS: [0, -1], KeyA: [-1, 0], KeyD: [1, 0] }; // NDC, y hướng lên
+  const TURN_DEG = { ArrowLeft: -90, ArrowRight: 90, ArrowUp: 180, ArrowDown: 180 };
   const AXIS_NAME = ['L', 'W', 'H'];
   const swallowed = new Set();
 
@@ -707,8 +710,9 @@ function main() {
     }
     const isMove = code in KEY_DIR;
     const isRot = code === 'KeyQ' || code === 'KeyE';
+    const isTurn = code in TURN_DEG;
     const isFit = code === CFG.FIT_KEY;
-    if (!isMove && !isRot && !isFit) return;
+    if (!isMove && !isRot && !isTurn && !isFit) return;
     const ctx = getCtx();
     if (!ctx) return;
 
@@ -725,6 +729,7 @@ function main() {
 
     const viewName = hoveredView(ctx);
     if (!viewName) return; // chuột không ở trên Top/Side/Front: giữ nguyên phím của CVAT
+    if (isTurn && viewName !== 'top') return; // phím mũi tên chỉ dùng ở view Top
     swallow(e); // chặn D (lùi frame) v.v. khi chuột ở trên view
     if (!ctx.state) { toast('Chưa chọn cuboid nào'); return; }
     if (busy()) return;
@@ -735,6 +740,14 @@ function main() {
       const deg = (e.shiftKey ? CFG.ROT_STEP_FINE_DEG : CFG.ROT_STEP_DEG) * (code === 'KeyQ' ? -1 : 1);
       pts[5] = normAngle(pts[5] + (deg * Math.PI) / 180);
       commit(ctx, pts);
+      return;
+    }
+    if (isTurn) {
+      const deg = TURN_DEG[code];
+      pts[5] = normAngle(pts[5] + (deg * Math.PI) / 180);
+      if (Math.abs(deg) === 90) [pts[6], pts[7]] = [pts[7], pts[6]]; // giữ nguyên khung đáy
+      commit(ctx, pts);
+      toast(`Xoay ${deg > 0 ? '+' : ''}${deg}° · yaw ${((pts[5] * 180) / Math.PI).toFixed(1)}°`, false, 900);
       return;
     }
 

@@ -9,6 +9,8 @@ Userscript (Tampermonkey) cho trình duyệt, thêm 2 tính năng vào giao di�
 | **S / A** | như trên | Thu mặt dưới / mặt trái vào trong 2 cm (mặt dịch lên / sang phải) |
 | **Shift + WASD** | như trên | Đảo lại: Shift+W/D thu mặt trên/phải, Shift+S/A nới mặt dưới/trái |
 | **Q / E** | chuột ở trên view Top | Xoay yaw −1° / +1° (giữ Shift: 0,2°) |
+| **← / →** | chuột ở trên view Top | Xoay −90° / +90°. L và W đổi chỗ cho nhau nên khung đáy giữ nguyên, chỉ đổi hướng đầu xe. |
+| **↑ / ↓** | chuột ở trên view Top | Xoay 180° (đảo đầu/đuôi) |
 | **] / [** | trong job 3D | Điểm to hơn / nhỏ hơn (nhớ cho lần sau) |
 | **B** | trong job 3D | Đổi độ sáng điểm: 0 (gốc) → 1 → 2 → 3 |
 
