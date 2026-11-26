@@ -19,7 +19,9 @@ function rayBox(o, d, box) {
   return t0 <= t1 && t0 > 0 ? t0 : Infinity;
 }
 
-function scan(boxes, noise = 0.02, seed = 7) {
+// planes: mặt đất gồm các mặt phẳng z = a*x + b*y + c, mỗi mặt có thể giới hạn vùng (region(x, y)).
+// Mặc định: mặt đất phẳng z = GROUND_Z.
+function scan(boxes, noise = 0.02, seed = 7, planes = null) {
   let s = seed;
   const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296 - 0.5) * 2 * noise;
   const pts = [];
@@ -29,6 +31,17 @@ function scan(boxes, noise = 0.02, seed = 7) {
       const a = (az * Math.PI) / 180;
       const d = [Math.cos(el) * Math.cos(a), Math.cos(el) * Math.sin(a), Math.sin(el)];
       let t = d[2] < 0 ? -SENSOR_H / d[2] : Infinity;
+      if (planes) {
+        t = Infinity;
+        for (const p of planes) {
+          const den = d[2] - p.a * d[0] - p.b * d[1];
+          if (Math.abs(den) < 1e-9) continue;
+          const tp = p.c / den;
+          if (tp <= 0 || tp >= t) continue;
+          if (p.region && !p.region(d[0] * tp, d[1] * tp)) continue;
+          t = tp;
+        }
+      }
       for (const b of boxes) t = Math.min(t, rayBox([0, 0, 0], d, b));
       if (!isFinite(t) || t > 70) continue;
       pts.push(d[0] * t + rnd(), d[1] * t + rnd(), d[2] * t + rnd());
