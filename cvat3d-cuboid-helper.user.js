@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CVAT 3D Cuboid Helper (auto-fit + WASD)
 // @namespace    tool_3d
-// @version      0.3.0
+// @version      0.4.0
 // @description  Tự fit cuboid theo cụm điểm (G, Ctrl+click), gom lại theo view 2D, giữ cuboid sát mặt đất, nới/thu từng mặt bằng WASD trong CVAT 3D.
 // @match        http://localhost:8080/*
 // @match        http://127.0.0.1:8080/*
@@ -28,6 +28,11 @@
 //   Cuboid dạng TRACK: G, Ctrl+click (fit lại) và G trên Top/Side/Front không đổi kích thước nữa, chỉ dời
 //                  cuboid tới chỗ có nhiều điểm nhất (Shift+G ở Top: xoay lại nữa). Dạng SHAPE vẫn như trên.
 //                  Đổi L/W/H ở 1 keyframe (WASD hoặc kéo cạnh) thì mọi keyframe khác của track đổi theo.
+//                  Chỉnh 1 track xong, sang frame sau tool tự gom cụm (dời) track đó và lưu thành keyframe.
+//   U            : đồng nhất kích thước mọi keyframe của track đang chọn theo kích thước ở frame đang xem
+//                  (popup có thêm nút đồng nhất tất cả track trong job, theo trung vị các keyframe)
+//   Bật/tắt: popup của extension (tự dính mặt đất, tự gom track frame sau, áp kích thước track),
+//                  hoặc trong Console: cuboidHelper.set({ groundLock: true, autoTrack: false, trackSyncSize: true })
 //   W / D        : (chuột trên view Top/Side/Front) nới mặt trên / mặt phải ra ngoài
 //   S / A        : thu mặt dưới / mặt trái vào trong (mặt dịch lên / sang phải)
 //   Shift+WASD   : đảo lại (Shift+W/D thu mặt trên/phải, Shift+S/A nới mặt dưới/trái)
@@ -40,6 +45,7 @@
 (function () {
 function main() {
   'use strict';
+  const VERSION = '0.4.0';
 
   // ---------------------------------------------------------------- config
   const CFG = {
@@ -50,6 +56,7 @@ function main() {
     ROT_STEP_FINE_DEG: 0.2,
     FIT_KEY: 'KeyG',
     LOCK_KEY: 'KeyJ',      // bật/tắt khoá sát mặt đất
+    UNIFY_KEY: 'KeyU',     // đồng nhất kích thước mọi keyframe của track đang chọn (lấy kích thước ở frame đang xem)
 
     GROUND_RADIUS: 12,     // m, vùng lấy điểm để ước lượng mặt đất (RANSAC, dùng để bỏ điểm đất khi gom)
     GROUND_THRESH: 0.15,   // m, ngưỡng inlier RANSAC
@@ -82,6 +89,11 @@ function main() {
     TRACK_SEARCH: 1.0,     // m, cuboid dạng track: tìm điểm trong cuboid nới thêm chừng này (sang frame mới cuboid thường lệch chỗ)
     TRACK_SYNC_SIZE: true, // đổi L/W/H ở 1 keyframe của track thì áp cho mọi keyframe khác của track đó
     TRACK_SYNC_DELAY: 800, // ms, chờ ngần này sau lần đổi kích thước cuối (bấm WASD liên tục) rồi mới áp
+    AUTO_TRACK: true,      // chỉnh 1 track xong, sang frame sau tự gom cụm (dời) track đó rồi lưu keyframe
+    AUTO_TRACK_MAX_MOVE: 3.0, // m, phải dời xa hơn chừng này so với vị trí đoán trước: dừng theo track đó
+    AUTO_TRACK_MIN_POINTS: 8, // cụm ít điểm hơn: dừng theo track đó
+    AUTO_TRACK_WAIT: 6000, // ms, chờ point cloud của frame mới tải xong tối đa chừng này
+    AUTO_TRACK_PREDICT_MAX: 5, // frame, đoán vị trí theo vận tốc khi frame mới cách frame đã gom không quá chừng này
 
     // Ctrl + click trái (view 3D lớn): gom chặt từ điểm bấm, cho vật nhỏ, không lan sang hàng rào
     PICK_PX: 12,           // px, lấy điểm gần camera nhất trong bán kính này quanh con trỏ
@@ -1298,40 +1310,55 @@ function main() {
 
   const samePoints = (a, b) => a && b && [0, 1, 2, 5, 6, 7, 8].every((k) => Math.abs(a[k] - b[k]) < 1e-6);
 
+  let lastFrame = null;
   function onStoreChange() {
-    if (!pending || !store) return;
-    const ann = store.getState().annotation;
-    const s = ann && ann.annotations && (ann.annotations.states || []).find((x) => x.clientID === pending.id);
-    if (s && samePoints(s.points, pending.points)) { pending = null; verified = true; }
+    if (!store) return;
+    if (pending) {
+      const ann = store.getState().annotation;
+      const s = ann && ann.annotations && (ann.annotations.states || []).find((x) => x.clientID === pending.id);
+      if (s && samePoints(s.points, pending.points)) { pending = null; verified = true; }
+    }
+    // Đổi frame: tự gom cụm cho các track đang theo
+    const f = currentFrame();
+    if (f != null && f !== lastFrame) {
+      const prev = lastFrame;
+      lastFrame = f;
+      if (prev != null) onFrameChanged(prev, f);
+    }
   }
 
-  async function commitFallback(ctx, points) {
-    ctx.state.points = points;
-    const saved = await ctx.state.save();
+  async function commitFallback(ctx, points, state = ctx.state) {
+    state.points = points;
+    const saved = await state.save();
     let history;
     try { history = await ctx.st.annotation.job.instance.actions.get(); } catch (e) { /* bỏ qua */ }
     ctx.store.dispatch({ type: 'UPDATE_ANNOTATIONS_SUCCESS', payload: { states: [saved], history } });
   }
 
-  function commit(ctx, points) {
-    // Đổi kích thước 1 track (vd. WASD): hẹn áp kích thước mới cho mọi keyframe khác
-    if (isTrack(ctx.state) && isSizeChange(ctx.state.points, points)) scheduleTrackSize(ctx.state.clientID, points.slice(6, 9));
-    pending = { id: ctx.state.clientID, points, t: Date.now() };
+  // Lưu points mới cho state (mặc định: cuboid đang chọn)
+  function commit(ctx, points, state = ctx.state) {
+    if (isTrack(state)) {
+      // Đổi kích thước 1 track (vd. WASD): hẹn áp kích thước mới cho mọi keyframe khác
+      if (isSizeChange(state.points, points)) scheduleTrackSize(state.clientID, points.slice(6, 9));
+      // Bạn vừa chỉnh track này: sang frame sau tự gom cụm cho nó (không tính lần tự gom của chính tool)
+      if (!autoCommitting) markFollow(state, points);
+    }
+    pending = { id: state.clientID, points, t: Date.now() };
     if (useFallback) {
-      commitFallback(ctx, points).catch((e) => toast('Lỗi lưu: ' + e.message, true)).finally(() => onStoreChange());
+      commitFallback(ctx, points, state).catch((e) => toast('Lỗi lưu: ' + e.message, true)).finally(() => onStoreChange());
       return;
     }
     // Cách CVAT tự làm khi bạn kéo cuboid: canvas phát sự kiện 'canvas.edited' trên view perspective
     selfDispatch = true;
     try {
-      ctx.html.perspective.dispatchEvent(new CustomEvent('canvas.edited', { detail: { state: ctx.state, points } }));
+      ctx.html.perspective.dispatchEvent(new CustomEvent('canvas.edited', { detail: { state, points } }));
     } finally { selfDispatch = false; }
     if (!verified) {
       setTimeout(() => {
         if (pending && pending.points === points) {
           console.warn('[cuboid-helper] canvas.edited không được xử lý, chuyển sang cách lưu dự phòng');
           useFallback = true;
-          commit(ctx, points);
+          commit(ctx, points, state);
         }
       }, 600);
     }
@@ -1571,16 +1598,39 @@ function main() {
     return true;
   }
 
-  // ------------------------------------------------- khoá sát mặt đất
-  const LOCK_LS = 'cuboidHelperGroundLock';
-  let groundLock = true;
-  try { if (localStorage.getItem(LOCK_LS) === '0') groundLock = false; } catch (e) { /* bỏ qua */ }
+  // ------------------------------------------------- cài đặt bật/tắt
+  // Lưu trong localStorage của trang. Khi chạy dạng extension, popup đổi cài đặt qua bridge.js (postMessage).
+  const SETTINGS_LS = 'cuboidHelperSettings';
+  const SETTING_NAMES = {
+    groundLock: 'Tự dính mặt đất',
+    autoTrack: 'Tự gom track ở frame sau',
+    trackSyncSize: 'Áp kích thước track cho mọi keyframe',
+  };
+  const SET = { groundLock: true, autoTrack: CFG.AUTO_TRACK, trackSyncSize: CFG.TRACK_SYNC_SIZE };
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_LS) || '{}');
+    if (!('groundLock' in saved) && localStorage.getItem('cuboidHelperGroundLock') === '0') saved.groundLock = false; // bản cũ
+    for (const k of Object.keys(SET)) if (typeof saved[k] === 'boolean') SET[k] = saved[k];
+  } catch (e) { /* bỏ qua */ }
   let snapCount = 0;
 
+  // Đổi cài đặt. fromBridge: đến từ popup của extension (không gửi ngược lại).
+  function setSettings(patch, fromBridge = false) {
+    const changed = [];
+    for (const k of Object.keys(SET)) {
+      if (!patch || typeof patch[k] !== 'boolean' || patch[k] === SET[k]) continue;
+      SET[k] = patch[k];
+      changed.push(`${SETTING_NAMES[k]}: ${SET[k] ? 'BẬT' : 'TẮT'}`);
+    }
+    if (!changed.length) return { ...SET };
+    try { localStorage.setItem(SETTINGS_LS, JSON.stringify(SET)); } catch (e) { /* bỏ qua */ }
+    if (!fromBridge) window.postMessage({ __cuboidHelper: 'set', settings: { ...SET } }, location.origin);
+    toast(changed.join('\n'), false, 2000);
+    return { ...SET };
+  }
+
   function toggleLock() {
-    groundLock = !groundLock;
-    try { localStorage.setItem(LOCK_LS, groundLock ? '1' : '0'); } catch (e) { /* bỏ qua */ }
-    toast(`Khoá sát mặt đất: ${groundLock ? 'BẬT (di chuyển/tạo cuboid luôn đặt đáy lên mặt đất)' : 'TẮT'}`, false, 2000);
+    setSettings({ groundLock: !SET.groundLock });
   }
 
   // Chỉ dời chỗ (kích thước và góc xoay giữ nguyên)?
@@ -1610,10 +1660,13 @@ function main() {
     const d = e.detail;
     if (!d || !d.state || !Array.isArray(d.points)) return;
     if (d.state.shapeType && String(d.state.shapeType).toLowerCase() !== 'cuboid') return;
-    if (groundLock && isMove(d.state.points, d.points)) {
+    if (SET.groundLock && isMove(d.state.points, d.points)) {
       try { snapInPlace(d.points, 'Di chuyển'); } catch (err) { console.warn('[cuboid-helper] không đặt được sát đất:', err); }
     }
-    if (isTrack(d.state) && isSizeChange(d.state.points, d.points)) scheduleTrackSize(d.state.clientID, d.points.slice(6, 9));
+    if (isTrack(d.state)) {
+      if (isSizeChange(d.state.points, d.points)) scheduleTrackSize(d.state.clientID, d.points.slice(6, 9));
+      markFollow(d.state, d.points);
+    }
   }, true);
 
   // ------------------------------------------- track: đổi L/W/H ở 1 keyframe -> mọi keyframe
@@ -1636,7 +1689,7 @@ function main() {
   const sizeTimers = {};
   let sizeSyncCount = 0;
   function scheduleTrackSize(id, dims) {
-    if (!CFG.TRACK_SYNC_SIZE) return;
+    if (!SET.trackSyncSize) return;
     const frame = currentFrame();
     if (frame == null) return;
     clearTimeout(sizeTimers[id]);
@@ -1649,48 +1702,240 @@ function main() {
     }, CFG.TRACK_SYNC_DELAY);
   }
 
-  // Áp L/W/H cho mọi keyframe (trừ frame vừa sửa) của track id: đi theo keyframes.first -> next -> ... của cvat-core
-  async function syncTrackSize(id, frame, dims) {
+  // API annotations của cvat-core (job đang mở), hoặc null
+  function getJob() {
     const st = store && store.getState();
     const job = st && st.annotation && st.annotation.job && st.annotation.job.instance;
-    if (!job || !job.annotations || typeof job.annotations.get !== 'function') {
-      toast('Không đọc được các keyframe của track trên CVAT này: chỉ frame vừa sửa đổi kích thước.', true, 5000);
-      return;
-    }
+    return job && job.annotations && typeof job.annotations.get === 'function' ? job : null;
+  }
+
+  // Các keyframe (ObjectState) của track id: đi theo keyframes.first -> next -> ... của cvat-core
+  async function trackKeyframes(job, id, fromFrame) {
     const stateAt = async (f) => ((await job.annotations.get(f, true, [])) || []).find((x) => x.clientID === id) || null;
-    const cur = await stateAt(frame);
-    if (!cur || !cur.keyframes) { toast('Không đọc được các keyframe của track.', true); return; }
-    let f = cur.keyframes.first != null ? cur.keyframes.first : frame;
-    let changed = 0, locked = 0, guard = 0;
+    const cur = await stateAt(fromFrame);
+    if (!cur || !cur.keyframes) return null;
+    const keys = [];
+    let f = cur.keyframes.first != null ? cur.keyframes.first : fromFrame, guard = 0;
     while (f != null && guard++ < 10000) {
-      const s = f === frame ? cur : await stateAt(f);
+      const s = f === fromFrame ? cur : await stateAt(f);
       if (!s) break;
-      if (f !== frame && s.keyframe && !s.outside && [6, 7, 8].some((k) => Math.abs(s.points[k] - dims[k - 6]) > 1e-6)) {
-        if (s.lock) locked++;
-        else {
-          s.points = resizeKeepVisible(s.points, dims);
-          await s.save();
-          changed++;
-        }
-      }
+      if (s.keyframe) keys.push({ f, s });
       const next = s.keyframes ? s.keyframes.next : null;
       f = next != null && next > f ? next : null;
     }
+    return keys;
+  }
+
+  // Đặt kích thước dims cho các keyframe (bỏ qua frame skipFrame, keyframe outside, keyframe khoá)
+  async function applyTrackSize(keys, dims, skipFrame = null) {
+    let changed = 0, locked = 0;
+    for (const { f, s } of keys) {
+      if (f === skipFrame || s.outside) continue;
+      if (![6, 7, 8].some((k) => Math.abs(s.points[k] - dims[k - 6]) > 1e-6)) continue;
+      if (s.lock) { locked++; continue; }
+      s.points = resizeKeepVisible(s.points, dims);
+      await s.save();
+      changed++;
+    }
     sizeSyncCount += changed;
-    // Cập nhật danh sách hoàn tác (Ctrl+Z) trên giao diện
+    return { changed, locked };
+  }
+
+  // Sau khi sửa keyframe qua API: cập nhật cuboid ở frame đang xem và danh sách hoàn tác (Ctrl+Z) trên giao diện
+  async function refreshStates(job, ids) {
     try {
+      const f = currentFrame();
+      const fresh = f == null ? [] : ((await job.annotations.get(f, false, [])) || []).filter((x) => ids.has(x.clientID));
       const history = await job.actions.get();
-      store.dispatch({ type: 'UPDATE_ANNOTATIONS_SUCCESS', payload: { states: [], history } });
+      store.dispatch({ type: 'UPDATE_ANNOTATIONS_SUCCESS', payload: { states: fresh, history } });
     } catch (err) { /* bỏ qua */ }
+  }
+
+  // Áp L/W/H cho mọi keyframe (trừ frame vừa sửa) của track id
+  async function syncTrackSize(id, frame, dims) {
+    const job = getJob();
+    if (!job) { toast('Không đọc được các keyframe của track trên CVAT này: chỉ frame vừa sửa đổi kích thước.', true, 5000); return; }
+    const keys = await trackKeyframes(job, id, frame);
+    if (!keys) { toast('Không đọc được các keyframe của track.', true); return; }
+    const { changed, locked } = await applyTrackSize(keys, dims, frame);
+    await refreshStates(job, new Set());
     if (changed || locked) {
       toast(`Track #${id}: áp L ${dims[0].toFixed(2)} W ${dims[1].toFixed(2)} H ${dims[2].toFixed(2)} cho ${changed} keyframe khác` +
         (locked ? ` (bỏ qua ${locked} keyframe đang khoá)` : ''), false, 3500);
     }
   }
 
+  // ------------------------------------------- đồng nhất kích thước keyframe của track
+  // Phím U / popup: track đang chọn lấy kích thước ở frame đang xem. Popup "tất cả track": mỗi track lấy trung vị
+  // L, W, H các keyframe của nó. Ở mỗi keyframe giữ mặt phía LiDAR và đáy (resizeKeepVisible).
+  let unifying = false;
+  const fmtDims = (d) => `L ${d[0].toFixed(2)} W ${d[1].toFixed(2)} H ${d[2].toFixed(2)}`;
+
+  async function unifySelected() {
+    const ctx = getCtx();
+    if (!ctx || !ctx.state) return { ok: false, message: 'Chưa chọn cuboid nào. Chọn 1 track rồi làm lại.' };
+    if (!isTrack(ctx.state)) return { ok: false, message: 'Cuboid đang chọn là shape, không phải track.' };
+    const job = getJob();
+    if (!job) return { ok: false, message: 'Không đọc được các keyframe của track trên CVAT này.' };
+    if (unifying) return { ok: false, message: 'Đang đồng nhất, chờ xong rồi làm lại.' };
+    unifying = true;
+    try {
+      const id = ctx.state.clientID, dims = ctx.state.points.slice(6, 9);
+      const keys = await trackKeyframes(job, id, currentFrame());
+      if (!keys) return { ok: false, message: 'Không đọc được các keyframe của track.' };
+      const { changed, locked } = await applyTrackSize(keys, dims);
+      await refreshStates(job, new Set([id]));
+      return {
+        ok: true,
+        message: `Track #${id}: ${keys.length} keyframe, đổi ${changed} keyframe sang ${fmtDims(dims)}` +
+          (locked ? ` (bỏ qua ${locked} keyframe đang khoá)` : ''),
+      };
+    } finally { unifying = false; }
+  }
+
+  async function unifyAll() {
+    const job = getJob();
+    if (!job) return { ok: false, message: 'Không đọc được các keyframe của track trên CVAT này.' };
+    if (unifying) return { ok: false, message: 'Đang đồng nhất, chờ xong rồi làm lại.' };
+    unifying = true;
+    try {
+      const frame = currentFrame();
+      const all = ((await job.annotations.get(frame, true, [])) || [])
+        .filter((x) => isTrack(x) && String(x.shapeType).toLowerCase() === 'cuboid');
+      let tracks = 0, changed = 0, locked = 0;
+      const ids = new Set();
+      for (const t of all) {
+        const keys = await trackKeyframes(job, t.clientID, frame);
+        const live = keys ? keys.filter((k) => !k.s.outside) : [];
+        if (live.length < 2) continue;
+        const dims = [6, 7, 8].map((k) => median(live.map((x) => x.s.points[k])));
+        const r = await applyTrackSize(keys, dims);
+        if (r.changed) { tracks++; ids.add(t.clientID); }
+        changed += r.changed;
+        locked += r.locked;
+      }
+      await refreshStates(job, ids);
+      return {
+        ok: true,
+        message: `${all.length} track: đồng nhất ${tracks} track (đổi ${changed} keyframe, mỗi track lấy trung vị L/W/H các keyframe)` +
+          (locked ? `, bỏ qua ${locked} keyframe đang khoá` : ''),
+      };
+    } finally { unifying = false; }
+  }
+
+  async function runCommand(name) {
+    try {
+      if (name === 'unifySelected') return await unifySelected();
+      if (name === 'unifyAll') return await unifyAll();
+      return { ok: false, message: `Lệnh lạ: ${name}` };
+    } catch (err) {
+      console.warn('[cuboid-helper] lệnh lỗi:', err);
+      return { ok: false, message: 'Lỗi: ' + err.message };
+    }
+  }
+
+  // ------------------------------------------- track: tự gom cụm ở các frame sau
+  // Track bạn vừa chỉnh (G, WASD, kéo, mũi tên...) được "theo". Sang frame sau (lớn hơn frame vừa chỉnh), khi point
+  // cloud của frame đó tải xong, tool gom cụm kiểu track (chỉ dời, giữ kích thước) từ vị trí đoán theo vận tốc,
+  // rồi lưu thành keyframe. Không đè keyframe có sẵn. Dừng theo track khi không thấy vật hoặc phải nhảy quá xa.
+  const follows = new Map(); // clientID -> { id, frame, hist: [{ f, x, y }] }
+  let autoCommitting = false;
+  let frameToken = 0;
+
+  function markFollow(state, points) {
+    const f = currentFrame();
+    if (f == null || !state) return;
+    let fo = follows.get(state.clientID);
+    if (!fo) follows.set(state.clientID, (fo = { id: state.clientID, frame: f, hist: [] }));
+    fo.frame = f;
+    fo.hist = fo.hist.filter((h) => h.f < f).slice(-1).concat([{ f, x: points[0], y: points[1] }]);
+  }
+
+  // Vị trí đoán ở frame f theo 2 lần gom gần nhất (vận tốc không đổi)
+  function predictXY(fo, f) {
+    const h = fo.hist;
+    if (!h.length) return null;
+    const b = h[h.length - 1];
+    if (h.length < 2 || f - b.f > CFG.AUTO_TRACK_PREDICT_MAX) return [b.x, b.y];
+    const a = h[h.length - 2], k = (f - b.f) / (b.f - a.f);
+    return [b.x + (b.x - a.x) * k, b.y + (b.y - a.y) * k];
+  }
+
+  // Dấu nhận biết point cloud đang hiển thị (đổi khi CVAT tải xong frame khác)
+  function cloudSig(cloud) {
+    const g = cloud.obj && cloud.obj.geometry;
+    return [cloud.obj && cloud.obj.uuid, g && g.uuid, cloud.count, cloud.pos[0], cloud.pos[1], cloud.pos[2]].join('|');
+  }
+
+  function onFrameChanged(prev, f) {
+    if (!SET.autoTrack || ![...follows.values()].some((fo) => f > fo.frame)) return;
+    // CVAT đổi frame trong Redux trước, rồi mới tải point cloud của frame mới: đợi point cloud khác cái đang hiện
+    const ctx0 = getCtx();
+    const c0 = ctx0 && getCloud(ctx0);
+    const oldSig = c0 ? cloudSig(c0) : null;
+    const token = ++frameToken, t0 = Date.now();
+    const tick = () => {
+      if (token !== frameToken || currentFrame() !== f) return; // đã sang frame khác
+      const ctx = getCtx();
+      const cloud = ctx && getCloud(ctx);
+      if (!cloud || cloudSig(cloud) === oldSig) {
+        if (Date.now() - t0 < CFG.AUTO_TRACK_WAIT) setTimeout(tick, 100);
+        else toast(`Tự gom track: point cloud frame ${f} chưa tải xong, bỏ qua frame này`, true, 3000);
+        return;
+      }
+      setTimeout(() => { if (token === frameToken && currentFrame() === f) runAutoTrack(f); }, 80);
+    };
+    setTimeout(tick, 50);
+  }
+
+  function runAutoTrack(f) {
+    const ctx = getCtx();
+    const cloud = ctx && getCloud(ctx);
+    if (!cloud) return;
+    const states = (ctx.st.annotation.annotations && ctx.st.annotation.annotations.states) || [];
+    const done = [], stopped = [], idx = [];
+    for (const fo of [...follows.values()]) {
+      if (!(f > fo.frame)) continue;
+      const s = states.find((x) => x.clientID === fo.id);
+      if (!s || !isTrack(s) || String(s.shapeType).toLowerCase() !== 'cuboid') continue;
+      if (s.outside) { follows.delete(fo.id); stopped.push(`#${fo.id}: track đã kết thúc`); continue; }
+      if (s.lock) continue;
+      if (s.keyframe) {
+        // Keyframe có sẵn (bạn đã làm): không đè, chỉ ghi nhận vị trí để đoán tiếp
+        fo.frame = f;
+        fo.hist = fo.hist.slice(-1).concat([{ f, x: s.points[0], y: s.points[1] }]);
+        continue;
+      }
+      const rough = s.points.slice();
+      const pred = predictXY(fo, f);
+      if (pred) { rough[0] = pred[0]; rough[1] = pred[1]; }
+      let res;
+      try {
+        res = fitCuboid(cloud.pos, cloud.count, rough, s.label && s.label.name, CFG, [0, 0, 0], { keepSize: true });
+      } catch (err) {
+        follows.delete(fo.id); stopped.push(`#${fo.id}: ${err.message}`); continue;
+      }
+      const p = res.points, moved = Math.hypot(p[0] - rough[0], p[1] - rough[1]);
+      if (res.info.n < CFG.AUTO_TRACK_MIN_POINTS) { follows.delete(fo.id); stopped.push(`#${fo.id}: chỉ ${res.info.n} điểm`); continue; }
+      if (moved > CFG.AUTO_TRACK_MAX_MOVE) { follows.delete(fo.id); stopped.push(`#${fo.id}: phải nhảy ${moved.toFixed(1)} m`); continue; }
+      autoCommitting = true;
+      try { commit(ctx, p, s); } finally { autoCommitting = false; }
+      fo.frame = f;
+      fo.hist = fo.hist.slice(-1).concat([{ f, x: p[0], y: p[1] }]);
+      done.push(`#${fo.id}`);
+      for (const i of res.info.idx) idx.push(i);
+    }
+    if (idx.length) { try { showHighlight(ctx, cloud, idx, 2500); } catch (err) { /* bỏ qua */ } }
+    if (done.length || stopped.length) {
+      toast((done.length ? `Frame ${f}: tự gom track ${done.join(', ')}` : '') +
+        (stopped.length ? `${done.length ? '\n' : ''}⚠ Dừng theo ${stopped.join('; ')}. Chỉnh lại track rồi đi tiếp để theo lại.` : ''),
+      !!stopped.length && !done.length, stopped.length ? 5000 : 1800);
+    }
+  }
+
   // Cuboid mới vẽ (hoặc dán bằng Ctrl+V) cũng đặt đáy lên mặt đất
   window.addEventListener('canvas.drawn', (e) => {
-    if (selfDispatch || !groundLock) return;
+    if (selfDispatch || !SET.groundLock) return;
     const s = e.detail && e.detail.state;
     if (!s || !Array.isArray(s.points) || s.points.length < 9) return;
     if (s.shapeType && String(s.shapeType).toLowerCase() !== 'cuboid') return;
@@ -1808,7 +2053,7 @@ function main() {
     p[0] = d.pts[0] + d.dx;
     p[1] = d.pts[1] + d.dy;
     let note = '';
-    if (groundLock) {
+    if (SET.groundLock) {
       const cloud = getCloud(ctx);
       const z = cloud && snapZ(cloud.pos, cloud.count, p);
       if (z != null && isFinite(z)) { p[2] = z; note = ' · đáy sát mặt đất'; }
@@ -1910,6 +2155,15 @@ function main() {
       if (!e.repeat) toggleLock();
       return;
     }
+    if (code === CFG.UNIFY_KEY) {
+      const c = getCtx();
+      if (!c || !c.state || !isTrack(c.state)) return; // không phải track: để CVAT xử lý phím như thường
+      swallow(e);
+      if (e.repeat) return;
+      toast('Đang đồng nhất kích thước các keyframe…', false, 1500);
+      runCommand('unifySelected').then((r) => toast(r.message, !r.ok, 4000));
+      return;
+    }
     const isMoveKey = code in KEY_DIR;
     const isRot = code === 'KeyQ';
     const isTurn = code === 'KeyE';
@@ -1960,7 +2214,7 @@ function main() {
       // Phím mũi tên: dời cuboid theo hướng phím trên màn hình của view đang trỏ chuột
       const dir = screenDir(ctx, viewName, ARROW_DIR[code]);
       if (!dir) { toast('Không xác định được hướng ở view này'); return; }
-      if (groundLock) {
+      if (SET.groundLock) {
         // Khoá đất: chỉ dời theo mặt ngang, không lên/xuống
         dir[2] = 0;
         const len = Math.hypot(dir[0], dir[1]);
@@ -1970,7 +2224,7 @@ function main() {
       const step = e.shiftKey ? CFG.MOVE_STEP_FINE : CFG.MOVE_STEP;
       for (let i = 0; i < 3; i++) pts[i] += dir[i] * step;
       let note = '';
-      if (groundLock) {
+      if (SET.groundLock) {
         const cloud = getCloud(ctx);
         const z = cloud && snapZ(cloud.pos, cloud.count, pts);
         if (z != null && isFinite(z)) { pts[2] = z; note = ' · đáy sát đất'; }
@@ -2047,7 +2301,7 @@ function main() {
     try {
       const before = ctx.state.points.slice(0, 9);
       const res = refine2D(cloud.pos, cloud.count, ctx.state.points, axes, CFG, [0, 0, 0],
-        { refineYaw, snapGround: groundLock, keepSize: isTrack(ctx.state) });
+        { refineYaw, snapGround: SET.groundLock, keepSize: isTrack(ctx.state) });
       commit(ctx, res.points);
       const p = res.points, i = res.info;
       try { showHighlight(ctx, cloud, i.idx); } catch (err) { console.warn('[cuboid-helper] không tô được cụm:', err); }
@@ -2079,24 +2333,51 @@ function main() {
     toastTimer = setTimeout(() => { toastEl.style.display = 'none'; }, ms);
   }
 
-  // Dùng trong DevTools console để kiểm tra: cuboidHelper.check()
+  function statusInfo() {
+    const ctx = getCtx();
+    const cloud = ctx && getCloud(ctx);
+    return {
+      version: VERSION, store: !!findStore(), canvas3d: !!ctx, viewImpl: !!(ctx && ctx.view),
+      activeCuboid: ctx && ctx.state ? ctx.state.clientID : null,
+      cloudPoints: cloud ? cloud.count : 0, fallbackSave: useFallback,
+      ...SET, groundSnaps: snapCount, trackSizeSyncs: sizeSyncCount, followedTracks: [...follows.keys()],
+    };
+  }
+
+  // Extension: bridge.js (chạy ở vùng tách biệt, đọc được bộ nhớ của extension) gửi cài đặt từ popup qua
+  // postMessage và hỏi trạng thái để popup hiển thị. Chỉ nhận tin của chính trang này.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || typeof e.data !== 'object') return;
+    const d = e.data;
+    if (d.__cuboidHelper === 'settings') setSettings(d.settings, true);
+    else if (d.__cuboidHelper === 'status?') window.postMessage({ __cuboidHelper: 'status', status: statusInfo() }, location.origin);
+    else if (d.__cuboidHelper === 'command' && typeof d.name === 'string') {
+      runCommand(d.name).then((res) => {
+        toast(res.message, !res.ok, 4000);
+        window.postMessage({ __cuboidHelper: 'commandResult', id: d.id, result: res }, location.origin);
+      });
+    }
+  });
+  window.postMessage({ __cuboidHelper: 'hello' }, location.origin);
+
+  // Dùng trong DevTools console: cuboidHelper.check(), cuboidHelper.set({ autoTrack: false }), cuboidHelper.unfollow()
   window.cuboidHelper = {
     ...core,
     getCtx, getCloud,
     check() {
-      const ctx = getCtx();
-      const cloud = ctx && getCloud(ctx);
-      const r = {
-        store: !!findStore(), canvas3d: !!ctx, viewImpl: !!(ctx && ctx.view),
-        activeCuboid: ctx && ctx.state ? ctx.state.clientID : null,
-        cloudPoints: cloud ? cloud.count : 0, fallbackSave: useFallback,
-        groundLock, groundSnaps: snapCount, trackSizeSyncs: sizeSyncCount,
-      };
+      const r = statusInfo();
       console.table(r);
       return r;
     },
+    set: (patch) => setSettings(patch),
+    unify: () => runCommand('unifySelected'),
+    unifyAll: () => runCommand('unifyAll'),
+    unfollow(id) {
+      if (id == null) follows.clear(); else follows.delete(id);
+      return [...follows.keys()];
+    },
   };
-  console.log('[cuboid-helper] đã nạp. Gõ cuboidHelper.check() trong console để kiểm tra.');
+  console.log(`[cuboid-helper] đã nạp bản ${VERSION}. Gõ cuboidHelper.check() trong console để kiểm tra.`);
 }
 
   // Node (test): chạy trực tiếp để xuất module

@@ -17,9 +17,12 @@ const f2 = (v) => v.toFixed(2);
 
 // ------------------------------------------------------------ DOM giả
 let winListeners = {};
+const posted = []; // tin nhắn window.postMessage (giữa script và bridge.js)
 const win = {
   addEventListener(t, fn, cap) { (winListeners[t] = winListeners[t] || []).push({ fn, cap: !!cap }); },
-  removeEventListener() {},
+  removeEventListener(t, fn) { winListeners[t] = (winListeners[t] || []).filter((l) => l.fn !== fn); },
+  // Như trình duyệt: tin nhắn tới sau (bất đồng bộ), source là chính window
+  postMessage(data) { posted.push(data); setTimeout(() => dispatch(win, makeEvent('message', { data, source: win })), 0); },
 };
 function runListeners(list, ev) {
   for (const l of list) { l.fn(ev); if (ev._immediate) return true; }
@@ -112,7 +115,7 @@ const camera = (P, V) => ({ projectionMatrix: { elements: P }, matrixWorldInvers
 const carBox = car(8, 4, -20);
 const ped = car(6, -3, 40, 0.7, 0.6, 1.75);
 const pos = scan([carBox, ped]);
-const cloud = new Points(new Geo(), new Mat());
+let cloud = new Points(new Geo(), new Mat());
 cloud.geometry.setAttribute('position', new Attr(pos, 3));
 const scenes = { perspective: new Obj(), top: new Obj(), side: new Obj(), front: new Obj() };
 scenes.perspective.add(cloud);
@@ -220,10 +223,11 @@ const document = {
 };
 const sandbox = {
   window: win, document, CustomEvent, console: { log() {}, warn() {}, table() {} },
-  location: { hostname: 'localhost', href: 'http://localhost:8080/tasks/1/jobs/1' },
+  location: { hostname: 'localhost', href: 'http://localhost:8080/tasks/1/jobs/1', origin: 'http://localhost:8080' },
   localStorage: { getItem: (k) => (k in storage ? storage[k] : null), setItem: (k, v) => { storage[k] = String(v); } },
   performance: { now: () => Date.now() },
-  setTimeout, clearTimeout,
+  // Bộ hẹn giờ dài (chờ dự phòng 5 s trở lên) không giữ Node chạy sau khi test xong
+  setTimeout: (fn, ms, ...a) => { const h = setTimeout(fn, ms, ...a); if (ms >= 5000) h.unref(); return h; }, clearTimeout,
   setInterval: (fn, ms) => { const h = setInterval(fn, ms); h.unref(); return h; },
 };
 sandbox.window.cuboidHelper = undefined;
@@ -426,6 +430,158 @@ const s1 = () => states.find((x) => x.clientID === 1).points;
   mouseTo(640, 300);
   ev = key('ArrowRight');
   ok('mũi tên khi chuột ngoài 3 view: không chặn (CVAT xử lý)', !ev.defaultPrevented);
+
+  // ---------------- Tự gom track ở frame sau
+  // Xe chạy dọc trục x, 0.6 m mỗi frame. Chỉnh track ở frame 0 (G), rồi sang frame 1, 2, 3: tool tự dời track
+  // theo cụm điểm và lưu keyframe. Như CVAT: Redux đổi frame trước, point cloud của frame mới tải sau.
+  await sleep(600);
+  helper.unfollow();
+  const carAt = (k) => car(6 + 0.6 * k, -6, 0);
+  const clouds = [0, 1, 2, 3, 4].map((k) => scan([carAt(k)]));
+  const showCloud = (k) => {
+    scenes.perspective.remove(cloud);
+    cloud = new Points(new Geo(), new Mat());
+    cloud.geometry.setAttribute('position', new Attr(clouds[k], 3));
+    scenes.perspective.add(cloud);
+  };
+  for (const k of Object.keys(trackShapes)) delete trackShapes[k];
+  const c0 = carAt(0);
+  trackShapes[0] = [c0.x + 0.3, c0.y + 0.2, c0.z + 0.6, 0, 0, 0, c0.L + 0.2, c0.W + 0.2, c0.H + 0.1, 0, 0, 0, 0, 0, 0, 0];
+  const putTrack = () => {
+    const i = states.findIndex((x) => x.clientID === 99);
+    if (i >= 0) states.splice(i, 1);
+    states.push({ ...trackStateAt(curFrame) });
+  };
+  showCloud(0);
+  putTrack();
+  activated = 99;
+  notify();
+  mouseTo(640, 300);
+  key('KeyG');
+  ok('track: G ở frame 0 dời về đúng xe', Math.abs(trackShapes[0][0] - c0.x) < 0.1, `x ${trackShapes[0][0].toFixed(2)} (xe ${c0.x})`);
+  const goFrame = async (k) => {
+    curFrame = k;
+    putTrack();
+    notify();
+    await sleep(200);
+    showCloud(k);
+    await sleep(700);
+  };
+  for (const k of [1, 2, 3]) {
+    await goFrame(k);
+    const sh = trackShapes[k], ck = carAt(k);
+    ok(`tự gom track: frame ${k} có keyframe ở đúng xe`, !!sh && Math.abs(sh[0] - ck.x) < 0.1 && Math.abs(sh[1] - ck.y) < 0.1 &&
+      [6, 7, 8].every((j) => Math.abs(sh[j] - trackShapes[0][j]) < 1e-9),
+    sh ? `x ${sh[0].toFixed(2)} (xe ${ck.x.toFixed(2)}) · ${lastToast().split('\n')[0]}` : 'không có keyframe');
+  }
+  helper.set({ autoTrack: false });
+  await goFrame(4);
+  ok('tắt tự gom track: frame 4 không tự tạo keyframe', !trackShapes[4], helper.check().autoTrack === false ? 'autoTrack: false' : '');
+  helper.set({ autoTrack: true });
+  // Keyframe bạn đã làm ở frame sau không bị đè
+  await goFrame(3);
+  const mine = trackShapes[3].slice();
+  mine[0] += 0.5;
+  trackShapes[3] = mine;
+  curFrame = 2; putTrack(); notify(); await sleep(100);
+  {
+    // chỉnh lại track ở frame 2 để theo lại từ đây
+    const st2 = states.find((x) => x.clientID === 99);
+    el.perspective.dispatchEvent(new CustomEvent('canvas.edited', { detail: { state: { ...st2, points: st2.points.slice() }, points: st2.points.map((v, j) => (j === 1 ? v + 0.01 : v)) } }));
+  }
+  await goFrame(3);
+  ok('tự gom track: không đè keyframe có sẵn', Math.abs(trackShapes[3][0] - mine[0]) < 1e-9);
+  states.splice(states.findIndex((x) => x.clientID === 99), 1);
+  helper.unfollow();
+  curFrame = 0;
+  showCloud(0);
+  activated = 1;
+  notify();
+  await sleep(300);
+
+  // ---------------- Đồng nhất kích thước keyframe track (phím U)
+  // Track có 3 keyframe kích thước khác nhau; đang ở frame 5: U thì mọi keyframe lấy kích thước ở frame 5
+  const kbox = (x, L, W, H) => [x, -6, GROUND_Z + H / 2, 0, 0, 0, L, W, H, 0, 0, 0, 0, 0, 0, 0];
+  for (const k of Object.keys(trackShapes)) delete trackShapes[k];
+  trackShapes[0] = kbox(6, 4.2, 1.8, 1.5);
+  trackShapes[5] = kbox(8, 4.7, 2.1, 1.7);
+  trackShapes[10] = kbox(10, 5.0, 2.2, 1.9);
+  const rear0 = trackShapes[0][0] - trackShapes[0][6] / 2;
+  curFrame = 5; putTrack(); activated = 99; notify();
+  const nAct = actions.length;
+  ev = key('KeyU');
+  await sleep(300);
+  ok('U: mọi keyframe lấy kích thước ở frame 5', ev.defaultPrevented &&
+    [0, 10].every((f) => [6, 7, 8].every((j) => Math.abs(trackShapes[f][j] - trackShapes[5][j]) < 1e-9)),
+  `${[0, 5, 10].map((f) => trackShapes[f].slice(6, 9).map((v) => v.toFixed(1)).join('×')).join(' / ')} · ${lastToast()}`);
+  ok('U: keyframe khác giữ mặt sau (phía LiDAR), đáy giữ nguyên',
+    Math.abs(trackShapes[0][0] - trackShapes[0][6] / 2 - rear0) < 1e-9 && Math.abs(bottomOf(trackShapes[0]) - GROUND_Z) < 1e-9);
+  ok('U: cập nhật cuboid trên màn hình (UPDATE_ANNOTATIONS_SUCCESS)',
+    actions.slice(nAct).some((a) => a.type === 'UPDATE_ANNOTATIONS_SUCCESS' && a.payload.states.some((x) => x.clientID === 99)));
+  states.splice(states.findIndex((x) => x.clientID === 99), 1);
+  activated = 1; curFrame = 0; notify();
+  ev = key('KeyU');
+  ok('U khi đang chọn shape: không chặn phím', !ev.defaultPrevented);
+  await sleep(200);
+
+  // ---------------- Extension: bridge.js nối popup (chrome.storage) với script trong trang
+  const chromeStore = {};
+  const storageListeners = [], runtimeListeners = [];
+  const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+  sandbox.chrome = {
+    storage: {
+      local: {
+        get(defaults, cb) {
+          const out = {};
+          for (const k of Object.keys(defaults)) out[k] = k in chromeStore ? clone(chromeStore[k]) : defaults[k];
+          setTimeout(() => cb(out), 0);
+        },
+        set(obj, cb) {
+          const changes = {};
+          for (const k of Object.keys(obj)) { changes[k] = { oldValue: clone(chromeStore[k]), newValue: clone(obj[k]) }; chromeStore[k] = clone(obj[k]); }
+          setTimeout(() => { storageListeners.forEach((fn) => fn(changes, 'local')); if (cb) cb(); }, 0);
+        },
+      },
+      onChanged: { addListener: (fn) => storageListeners.push(fn) },
+    },
+    runtime: { onMessage: { addListener: (fn) => runtimeListeners.push(fn) } },
+  };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'extension', 'bridge.js'), 'utf8'), sandbox);
+  await sleep(100);
+  // Popup tắt "tự gom track" và "tự dính mặt đất"
+  sandbox.chrome.storage.local.set({ settings: { groundLock: false, autoTrack: false, trackSyncSize: true } });
+  await sleep(100);
+  let cs = helper.check();
+  ok('popup tắt công tắc: trang nhận ngay', cs.groundLock === false && cs.autoTrack === false && cs.trackSyncSize === true,
+    `groundLock ${cs.groundLock}, autoTrack ${cs.autoTrack}, trackSyncSize ${cs.trackSyncSize}`);
+  // Bấm J trong trang: popup (chrome.storage) cũng đổi theo
+  key('KeyJ');
+  await sleep(100);
+  ok('phím J trong trang: lưu về extension', chromeStore.settings && chromeStore.settings.groundLock === true && helper.check().groundLock === true,
+    JSON.stringify(chromeStore.settings));
+  // Như Chrome: gửi tin cho mọi bộ nghe, chờ bộ nào trả lời
+  const sendRuntime = (msg) => new Promise((resolve) => {
+    let waiting = false;
+    for (const fn of runtimeListeners) if (fn(msg, {}, resolve) === true) waiting = true;
+    if (!waiting) setTimeout(() => resolve(null), 50);
+  });
+  // Popup hỏi trạng thái trang
+  const statusRes = await sendRuntime({ type: 'status' });
+  ok('popup hỏi trạng thái: thấy job 3D', !!statusRes && statusRes.loaded && statusRes.status && statusRes.status.canvas3d &&
+    statusRes.status.cloudPoints > 0, statusRes ? `${statusRes.status && statusRes.status.version} · ${statusRes.status && statusRes.status.cloudPoints} điểm` : 'không trả lời');
+  // Nút "Tất cả track trong job": mỗi track lấy trung vị L, W, H các keyframe
+  trackShapes[0] = kbox(6, 4.2, 1.8, 1.5);
+  trackShapes[5] = kbox(8, 4.7, 2.1, 1.7);
+  trackShapes[10] = kbox(10, 5.0, 2.2, 1.9);
+  const allRes = await sendRuntime({ type: 'command', name: 'unifyAll' });
+  ok('popup "tất cả track": trung vị L/W/H cho mọi keyframe', !!allRes && allRes.ok &&
+    [0, 5, 10].every((f) => Math.abs(trackShapes[f][6] - 4.7) < 1e-9 && Math.abs(trackShapes[f][7] - 2.1) < 1e-9 && Math.abs(trackShapes[f][8] - 1.7) < 1e-9),
+  allRes ? allRes.message : 'không trả lời');
+  const selRes = await sendRuntime({ type: 'command', name: 'unifySelected' });
+  ok('popup "track đang chọn" khi đang chọn shape: báo rõ', !!selRes && !selRes.ok && /shape/.test(selRes.message), selRes && selRes.message);
+  for (const k of Object.keys(trackShapes)) delete trackShapes[k];
+  sandbox.chrome.storage.local.set({ settings: { groundLock: true, autoTrack: true, trackSyncSize: true } });
+  await sleep(100);
 
   // Phím G khi không chọn gì: không chặn (để CVAT dùng G như thường)
   activated = null;

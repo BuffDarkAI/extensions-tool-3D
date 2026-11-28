@@ -14,11 +14,24 @@ if (!m || m[1] !== manifest.version) {
   process.exit(1);
 }
 
-const files = [
+// Các file popup tham chiếu (src="..." / href="..."), tính từ thư mục của popup
+function popupFiles(popup) {
+  if (!popup) return [];
+  const html = fs.readFileSync(path.join(root, popup), 'utf8');
+  const refs = [...html.matchAll(/\b(?:src|href)="([^"#:?]+)"/g)].map((m) => path.posix.normalize(path.posix.join(path.posix.dirname(popup), m[1])));
+  return [popup, ...refs];
+}
+const action = manifest.action || {};
+const files = [...new Set([
   'manifest.json',
   ...manifest.content_scripts.flatMap((c) => c.js),
   ...Object.values(manifest.icons || {}),
-];
+  ...Object.values(action.default_icon || {}),
+  ...popupFiles(action.default_popup),
+])];
+for (const f of files) {
+  if (!fs.existsSync(path.join(root, f))) { console.error(`Thiếu file: ${f}`); process.exit(1); }
+}
 const out = path.join(root, 'dist', 'cvat3d-cuboid-helper');
 fs.rmSync(out, { recursive: true, force: true });
 for (const f of files) {

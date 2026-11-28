@@ -1,6 +1,40 @@
 # CVAT 3D Cuboid Helper
 
-Userscript (Tampermonkey) cho trình duyệt, thêm các công cụ fit cuboid nhanh vào giao diện gán nhãn 3D của CVAT. Không cần sửa server.
+Extension cho Chrome/Edge, thêm các công cụ fit cuboid nhanh vào giao diện gán nhãn 3D của CVAT. **Không cần Tampermonkey**, không cần sửa server: chỉ cần nạp thư mục extension vào Chrome là dùng được.
+
+## Cài extension (Chrome, Edge)
+
+1. Mở `chrome://extensions` (Edge: `edge://extensions`), bật **Developer mode** (góc trên bên phải).
+2. Bấm **Load unpacked**, chọn thư mục `dist/cvat3d-cuboid-helper` (hoặc thư mục giải nén từ file `cvat3d-cuboid-helper-0.4.0.zip`). Chọn thư mục, không chọn file bên trong.
+3. Bấm biểu tượng ghim (🧩) trên thanh công cụ và ghim **CVAT 3D Cuboid Helper** để bấm mở popup cho nhanh.
+4. Mở (hoặc F5) trang job 3D. Bấm vào biểu tượng của extension: popup hiện **Đã kết nối job 3D · ... điểm** là xong.
+
+Extension chạy trên `localhost:8080`, `127.0.0.1:8080` và `https://cvat.edufun.ai`. Dùng server khác thì thêm địa chỉ vào cả 2 mục `matches` trong `manifest.json`. Cần Chrome/Edge bản 111 trở lên. Nếu đang cài script này trong Tampermonkey thì tắt nó đi: script chỉ chạy 1 lần trên mỗi trang.
+
+Chrome không cho cài thẳng file zip hay `.crx` tự đóng gói: phải giải nén rồi Load unpacked như trên. Muốn cài bằng một cú bấm thì phải đưa lên Chrome Web Store.
+
+**Đóng gói lại sau khi sửa code:** chạy `node build-extension.js`. Lệnh này tạo thư mục `dist/cvat3d-cuboid-helper/` (chỉ gồm các file extension cần) và file zip để chép sang máy khác. Sau đó bấm nút tải lại (↻) của extension trong `chrome://extensions`, rồi F5 trang CVAT.
+
+## Popup: các công tắc bật/tắt
+
+Bấm vào biểu tượng của extension để mở popup. Đổi công tắc là có tác dụng ngay trên trang CVAT đang mở, không cần F5, và được nhớ cho lần sau.
+
+| Công tắc | Mặc định | Tác dụng |
+|---|---|---|
+| **Tự dính mặt đất** | bật | Dời, kéo, tạo hay dán cuboid thì đáy tự căn sát mặt đường, không bay lên được. Cũng bật/tắt được bằng phím J. |
+| **Tự gom cụm track ở frame sau** | bật | Chỉnh một track xong, sang frame sau tool tự dời track đó tới cụm điểm của vật (giữ kích thước) và lưu keyframe. Xem phần "Tự gom track ở frame sau". |
+| **Áp kích thước track cho mọi keyframe** | bật | Đổi L/W/H ở một keyframe thì các keyframe khác của track đổi theo. |
+
+**Đồng nhất kích thước keyframe track** (2 nút trong popup):
+
+- **Track đang chọn** (giống phím U): mọi keyframe của track đang chọn lấy đúng L, W, H của track ở frame đang xem. Chỉnh kích thước cho đúng ở frame thấy vật rõ nhất rồi bấm.
+- **Tất cả track trong job**: mỗi track lấy trung vị L, W, H các keyframe của chính nó, nên vài keyframe bị lệch không kéo theo cả track. Nút này sửa hàng loạt nên phải bấm 2 lần mới chạy.
+
+Ở mỗi keyframe, mặt phía LiDAR giữ nguyên, mặt khuất nới hoặc thu theo, đáy giữ nguyên độ cao. Keyframe đang khoá (lock) được bỏ qua. Mỗi keyframe sửa là một bước Ctrl+Z riêng.
+
+Popup cũng cho biết trạng thái trang đang mở: đã kết nối job 3D (kèm số điểm và số track đang theo), script chưa chạy, hay tab đó không phải CVAT.
+
+## Phím tắt
 
 | Phím / chuột | Ở đâu | Tác dụng |
 |---|---|---|
@@ -10,6 +44,7 @@ Userscript (Tampermonkey) cho trình duyệt, thêm các công cụ fit cuboid n
 | **Shift + G** | chuột ở trên view Top | Như G, đồng thời tìm lại góc xoay theo cụm vừa gom |
 | **Shift + kéo** | view 3D lớn, kéo trúng cuboid đang chọn | Kéo cuboid trượt trên mặt đất. Thả chuột thì đáy đặt sát mặt đất. Esc để huỷ. |
 | **J** | trong job 3D | Bật/tắt **khoá sát mặt đất** (mặc định bật, nhớ cho lần sau) |
+| **U** | khi đang chọn 1 track | **Đồng nhất kích thước**: mọi keyframe của track lấy L, W, H ở frame đang xem |
 | **W / D** | chuột ở trên view Top, Side hoặc Front | Nới mặt trên / mặt phải ra ngoài 2 cm. Mặt đối diện giữ nguyên. |
 | **S / A** | như trên | Thu mặt dưới / mặt trái vào trong 2 cm (mặt dịch lên / sang phải) |
 | **Shift + WASD** | như trên | Đảo lại: Shift+W/D thu mặt trên/phải, Shift+S/A nới mặt dưới/trái |
@@ -25,20 +60,29 @@ Khi chuột ở trên 3 view nhỏ, script chặn các phím này nên **D khôn
 
 **Đổi kích thước track ở 1 keyframe là đủ:** khi bạn đổi L, W hoặc H của một track ở một frame (bằng WASD, hoặc kéo cạnh như bình thường của CVAT), tool áp kích thước mới cho **mọi keyframe khác** của track đó. Tool chờ 0,8 giây sau lần bấm cuối rồi mới áp, nên bấm WASD liên tục chỉ áp một lần. Ở mỗi keyframe, mặt phía LiDAR giữ nguyên, mặt khuất nới hoặc thu theo, đáy giữ nguyên độ cao. Xoay 90° bằng E chỉ đổi chỗ L và W, kích thước thật không đổi, nên không áp. Keyframe đang khoá (lock) được bỏ qua. Ô thông báo cho biết đã áp cho bao nhiêu keyframe. Mỗi keyframe được sửa là một bước Ctrl+Z riêng.
 
-## Cài làm extension (Chrome, Edge)
+## Tự gom track ở frame sau
 
-Không cần Tampermonkey, không phải dán lại sau mỗi lần tải trang.
+Khi công tắc **Tự gom cụm track ở frame sau** bật:
 
-1. Đóng gói: chạy `node build-extension.js`. Lệnh này tạo thư mục `dist/cvat3d-cuboid-helper/` (chỉ gồm `manifest.json`, script và icon) và file `dist/cvat3d-cuboid-helper-0.3.0.zip` để chép sang máy khác.
-2. Mở `chrome://extensions` (Edge: `edge://extensions`), bật **Developer mode**.
-3. Bấm **Load unpacked**, chọn thư mục `dist/cvat3d-cuboid-helper` (hoặc thư mục giải nén từ file zip). Chọn thẳng thư mục `tool_3d` cũng được.
-4. Mở hoặc tải lại (F5) trang job 3D. Gõ `cuboidHelper.check()` trong Console để kiểm tra.
+1. Bạn chỉnh một track ở frame nào đó (G, Ctrl+click, WASD, mũi tên, kéo...). Tool bắt đầu **theo** track đó.
+2. Bạn sang frame sau (phím F, nút next, hoặc kéo thanh frame tới frame lớn hơn). Tool đợi point cloud của frame mới tải xong, rồi với mỗi track đang theo:
+   - đoán vị trí mới theo vận tốc của 2 lần gom trước (xe đi đều thì đoán trúng ngay);
+   - gom cụm kiểu track: giữ L, W, H và góc, chỉ dời cuboid tới cụm điểm của vật, đáy sát mặt đất;
+   - lưu thành keyframe ở frame đó. Các điểm vừa gom được tô hồng 2,5 giây.
+3. Đi tiếp frame sau nữa thì lặp lại. Ô thông báo ghi "Frame N: tự gom track #id".
 
-Chrome không cho cài thẳng file zip hay `.crx` tự đóng gói: phải giải nén rồi Load unpacked như trên. Muốn cài bằng một cú bấm thì phải đưa lên Chrome Web Store.
+Tool **không đè** keyframe bạn đã làm sẵn ở frame sau, chỉ lấy vị trí của nó để đoán tiếp. Tool **dừng theo** một track (và báo ⚠) khi track đã kết thúc (outside), khi chỉ còn dưới 8 điểm, hoặc khi cuboid phải nhảy xa hơn 3 m so với vị trí đoán. Khi đó chỉnh lại track ở frame hiện tại để tool theo lại từ đây. Đi lùi về frame trước thì tool không tự gom. Góc xoay giữ nguyên: xe rẽ thì xoay lại bằng Q/E hoặc Shift+G ở view Top, tool theo góc mới từ frame đó.
 
-Extension chạy chính file `cvat3d-cuboid-helper.user.js`. Sửa file đó xong thì chạy lại `node build-extension.js` (nếu đang dùng thư mục `dist`), bấm nút tải lại (↻) của extension trong `chrome://extensions`, rồi F5 trang CVAT. Extension chạy trên `localhost:8080` và `https://cvat.edufun.ai`. Dùng server khác thì thêm địa chỉ vào `matches` trong `manifest.json`. Cần Chrome/Edge bản 111 trở lên. Đừng bật cùng lúc cả extension và script Tampermonkey: script chỉ chạy 1 lần trên mỗi trang.
+Trong Console: `cuboidHelper.check().followedTracks` là các track đang theo, `cuboidHelper.unfollow()` bỏ theo tất cả.
 
-## Cài đặt bằng Tampermonkey
+## Cách khác: dán vào Console hoặc dùng Tampermonkey
+
+Không cài được extension thì vẫn dùng được file `cvat3d-cuboid-helper.user.js`:
+
+- **Dán vào Console:** mở job 3D, F12, tab Console, dán toàn bộ file rồi Enter. Phải dán lại sau mỗi lần F5. Không có popup: bật/tắt bằng `cuboidHelper.set({ groundLock: true, autoTrack: false, trackSyncSize: true })`, đồng nhất tất cả track bằng `cuboidHelper.unifyAll()`.
+- **Tampermonkey:** làm theo các bước dưới.
+
+### Cài bằng Tampermonkey
 
 1. Cài tiện ích [Tampermonkey](https://www.tampermonkey.net/) cho Chrome, Edge hoặc Firefox.
 2. Mở Tampermonkey, chọn **Create a new script**, xóa nội dung mẫu, rồi dán toàn bộ file `cvat3d-cuboid-helper.user.js` vào.
@@ -51,7 +95,7 @@ Extension chạy chính file `cvat3d-cuboid-helper.user.js`. Sửa file đó xon
    ```js
    cuboidHelper.check()
    ```
-   Kết quả đúng là `store`, `canvas3d`, `viewImpl` đều `true`, và `cloudPoints` lớn hơn 0 (khoảng 30.000 điểm với dữ liệu kiểu nuScenes). `groundLock` cho biết khoá sát mặt đất đang bật hay tắt, `groundSnaps` là số lần tool đã đặt cuboid xuống đất.
+   Kết quả đúng là `store`, `canvas3d`, `viewImpl` đều `true`, và `cloudPoints` lớn hơn 0 (khoảng 30.000 điểm với dữ liệu kiểu nuScenes). `groundLock`, `autoTrack`, `trackSyncSize` là 3 công tắc, `groundSnaps` là số lần tool đã đặt cuboid xuống đất.
 
 ## Quy trình gán nhãn đề xuất
 
@@ -64,11 +108,11 @@ Extension chạy chính file `cvat3d-cuboid-helper.user.js`. Sửa file đó xon
 
 **Vật nhỏ, hoặc vật sát hàng rào/tường:** chọn nhãn ở thanh bên trái, rồi **Ctrl + click trái** vào vật trong view 3D lớn. Tool tạo cuboid mới và chọn luôn cuboid đó. Nếu G làm cuboid dính sang hàng rào, Ctrl+click vào vật nằm trong cuboid đó để fit lại.
 
-**Track qua nhiều frame:** sang mỗi frame, nếu cuboid lệch thì Shift+kéo về gần vật (hoặc kéo trong view Top), rồi bấm **G**. Tool chỉ dời cuboid, kích thước giữ nguyên qua mọi frame. Ở frame nào thấy vật rõ nhất thì chỉnh L/W/H bằng WASD ở frame đó, mọi keyframe khác đổi theo.
+**Track qua nhiều frame:** chỉnh track ở frame đầu (G, rồi WASD nếu cần), rồi bấm F đi tiếp: tool tự gom track ở từng frame sau. Frame nào tool báo ⚠ dừng theo, hoặc cuboid lệch, thì Shift+kéo về gần vật rồi bấm **G**: tool theo lại từ đó. Ở frame nào thấy vật rõ nhất thì chỉnh L/W/H bằng WASD ở frame đó, mọi keyframe khác đổi theo.
 
 Cuối cùng bấm **Ctrl+S** để lưu lên server như thường lệ. Ctrl+Z vẫn hoàn tác được.
 
-## Khoá sát mặt đất (phím J)
+## Tự dính mặt đất (phím J, hoặc công tắc trong popup)
 
 Khi khoá bật (mặc định), mọi lần **dời** cuboid đều đặt đáy cuboid nằm trên mặt đất ngay dưới nó, nên không kéo cuboid bay lên được:
 
@@ -169,7 +213,7 @@ Chạy `node test/fit.test.js`. Các số dưới đây đo khi tắt khoảng h
 
 Dữ liệu thật sẽ kém hơn: xe không phải hộp vuông, có gương, kính bị tia xuyên qua, mặt đất gồ ghề, và có điểm của xe khác. Với các trường hợp "chỉ thấy 1 mặt", kích thước của mặt khuất **là đoán theo class, không phải đo được**.
 
-`node test/browser.test.js` chạy cả phần trình duyệt của script với một CVAT giả (store Redux, canvas, camera, scene three.js giả): phím G, Ctrl+click tạo/fit lại cuboid, Shift+kéo, khoá mặt đất, phím J, WASD, track. Test này chỉ bắt lỗi trong code của script. CVAT giả được viết theo cách script đoán CVAT hoạt động, nên không thay được việc thử trên CVAT thật.
+`node test/browser.test.js` chạy cả phần trình duyệt của script với một CVAT giả (store Redux, canvas, camera, scene three.js giả): phím G, Ctrl+click tạo/fit lại cuboid, Shift+kéo, khoá mặt đất, phím J, WASD, mũi tên, track, tự gom track qua nhiều frame (xe chạy 0,6 m mỗi frame: keyframe đúng tới 2 cm), phím U đồng nhất kích thước keyframe, và `extension/bridge.js` với `chrome.storage` giả (popup đổi công tắc, phím J lưu về extension, popup hỏi trạng thái, nút đồng nhất tất cả track). Test này chỉ bắt lỗi trong code của script. CVAT giả được viết theo cách script đoán CVAT hoạt động, nên không thay được việc thử trên CVAT thật.
 
 ## Giới hạn và lưu ý
 
@@ -178,7 +222,8 @@ Dữ liệu thật sẽ kém hơn: xe không phải hộp vuông, có gương, k
   - **Ctrl+click tạo cuboid mới** giả lập sự kiện "vẽ xong cuboid" (`canvas.drawn`) của CVAT. Nếu CVAT của bạn không nhận, ô thông báo sẽ báo đỏ. Khi đó hãy vẽ hoặc chọn 1 cuboid, rồi Ctrl+click vào vật nằm trong cuboid đó để fit lại.
   - **Khoá mặt đất khi kéo bằng CVAT** dựa vào sự kiện `canvas.edited` mà CVAT phát khi bạn thả chuột. Nếu kéo xong mà cuboid vẫn lơ lửng và `groundSnaps` trong `check()` không tăng, hãy báo lại phiên bản CVAT. Shift+kéo trong view 3D lớn vẫn đặt sát đất vì do script tự lưu.
   - **Shift+kéo** di chuyển hình cuboid trong view 3D bằng cách tìm mesh có tên là `clientID`. Nếu không tìm thấy, tool vẽ một khung chấm xanh để bạn thấy vị trí mới.
-  - **Áp kích thước track cho mọi keyframe** đọc keyframe qua API của cvat-core (`job.annotations.get(frame)`, `keyframes.first/next`, `state.save()`). Nếu CVAT của bạn không có API này, ô thông báo báo đỏ và chỉ frame vừa sửa đổi kích thước. Có thể tắt bằng `TRACK_SYNC_SIZE: false`. `trackSizeSyncs` trong `check()` là số keyframe đã được áp.
+  - **Áp kích thước track cho mọi keyframe** đọc keyframe qua API của cvat-core (`job.annotations.get(frame)`, `keyframes.first/next`, `state.save()`). Nếu CVAT của bạn không có API này, ô thông báo báo đỏ và chỉ frame vừa sửa đổi kích thước. Tắt bằng công tắc **Áp kích thước track cho mọi keyframe** trong popup. `trackSizeSyncs` trong `check()` là số keyframe đã được áp.
+  - **Tự gom track ở frame sau** nhận biết đổi frame qua Redux (`annotation.player.frame.number`) và đợi point cloud trong canvas đổi sang cái mới. Nếu sau 6 giây point cloud vẫn chưa đổi, tool bỏ qua frame đó và báo đỏ. Mỗi keyframe tự gom là một bước Ctrl+Z riêng.
 - Hướng WASD được tính từ camera của từng view: tool chọn trục của cuboid gần nhất với hướng phím trên màn hình. Vì vậy phím luôn kéo đúng mặt bạn đang nhìn, dù view có xoay.
 - Phím G (và Shift+G) bị chặn khi đang chọn cuboid, nên chế độ nhóm của CVAT (G, Shift+G) chỉ dùng được khi không chọn cuboid nào. Nếu cần, đổi `FIT_KEY` trong `CFG`. Phím J đổi được bằng `LOCK_KEY`.
 - Ctrl+click và Shift+kéo trong view 3D lớn bị script giữ lại, CVAT không nhận cú bấm đó. Shift+kéo chỉ bị giữ khi bấm trúng cuboid đang chọn.
